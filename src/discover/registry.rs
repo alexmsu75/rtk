@@ -710,7 +710,10 @@ fn rewrite_segment_inner(seg: &str, excluded: &[ExcludePattern], depth: usize) -
     let stripped_cow = ENV_PREFIX.replace(cmd_part, "");
     let env_prefix_len = cmd_part.len() - stripped_cow.len();
     let env_prefix = &cmd_part[..env_prefix_len];
-    let cmd_clean = stripped_cow.trim();
+    // Normalize absolute binary paths (e.g. /usr/bin/grep → grep) so the
+    // rewrite_prefixes loop matches consistently with classify_command (#485).
+    let cmd_normalized = strip_absolute_path(stripped_cow.trim());
+    let cmd_clean = cmd_normalized.as_str();
 
     // #345: RTK_DISABLED=1 in env prefix → skip rewrite entirely
     // #508: warn on stderr so agents learn to stop overusing it
@@ -3164,6 +3167,63 @@ mod tests {
         assert_eq!(strip_absolute_path("/bin/ls -la"), "ls -la");
         assert_eq!(strip_absolute_path("grep -rn foo"), "grep -rn foo");
         assert_eq!(strip_absolute_path("/usr/local/bin/git"), "git");
+    }
+
+    // --- #485: rewrite absolute-path commands ---
+
+    #[test]
+    fn test_rewrite_absolute_path_grep() {
+        assert_eq!(
+            rewrite_command("/usr/bin/grep -n foo /etc/hostname", &[]),
+            Some("rtk grep -n foo /etc/hostname".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_absolute_path_git() {
+        assert_eq!(
+            rewrite_command("/usr/bin/git status", &[]),
+            Some("rtk git status".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_absolute_path_find() {
+        assert_eq!(
+            rewrite_command("/usr/bin/find . -name foo", &[]),
+            Some("rtk find . -name foo".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_absolute_path_ls() {
+        assert_eq!(
+            rewrite_command("/bin/ls -la", &[]),
+            Some("rtk ls -la".into())
+        );
+    }
+
+    #[test]
+    fn test_rewrite_absolute_path_in_pipe_lhs() {
+        let result = rewrite_command("/usr/bin/git log --oneline | grep foo", &[]).unwrap();
+        assert!(result.starts_with("rtk git log"), "got: {result}");
+        // Pipe RHS intentionally not rewritten today
+        assert!(result.ends_with("| grep foo"), "got: {result}");
+    }
+
+    #[test]
+    fn test_rewrite_absolute_path_in_compound() {
+        let result = rewrite_command("/usr/bin/git status && cargo test", &[]).unwrap();
+        assert!(result.contains("rtk git status"), "got: {result}");
+        assert!(result.contains("rtk cargo test"), "got: {result}");
+    }
+
+    #[test]
+    fn test_rewrite_env_prefix_with_absolute_path() {
+        assert_eq!(
+            rewrite_command("sudo /usr/bin/git status", &[]),
+            Some("sudo rtk git status".into())
+        );
     }
 
     // --- #163: git global options ---
