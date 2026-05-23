@@ -789,24 +789,12 @@ fn rewrite_segment_inner(
     // Find the matching rule (rtk_cmd values are unique across all rules)
     let rule = RULES.iter().find(|r| r.rtk_cmd == rtk_equivalent)?;
 
-    // Extract env prefix (sudo, env VAR=val, etc.)
-    let stripped_cow = ENV_PREFIX.replace(cmd_part, "");
-    let env_prefix_len = cmd_part.len() - stripped_cow.len();
-    let env_prefix = &cmd_part[..env_prefix_len];
     // Normalize absolute binary paths (e.g. /usr/bin/grep → grep) so the
     // rewrite_prefixes loop matches consistently with classify_command (#485).
+    // Env prefix and RTK_DISABLED are already handled by the early return above.
+    let stripped_cow = ENV_PREFIX.replace(cmd_part, "");
     let cmd_normalized = strip_absolute_path(stripped_cow.trim());
     let cmd_clean = cmd_normalized.as_str();
-
-    // #345: RTK_DISABLED=1 in env prefix → skip rewrite entirely
-    // #508: warn on stderr so agents learn to stop overusing it
-    if has_rtk_disabled_prefix(cmd_part) {
-        eprintln!(
-            "[rtk] RTK_DISABLED=1 detected — skipping filter for this command. \
-             Remove RTK_DISABLED=1 to restore token savings."
-        );
-        return None;
-    }
 
     if let Some(parts) = parse_golangci_run_parts(cmd_clean) {
         let rewritten = if parts.global_segment.is_empty() {
@@ -832,9 +820,11 @@ fn rewrite_segment_inner(
         }
     }
 
-    // Try each rewrite prefix (longest first) with word-boundary check
+    // Try each rewrite prefix (longest first) with word-boundary check.
+    // Match on cmd_clean so absolute binary paths normalize (#485):
+    // /usr/bin/grep → grep before prefix matching.
     for &prefix in rule.rewrite_prefixes {
-        if let Some(rest) = strip_word_prefix(cmd_part, prefix) {
+        if let Some(rest) = strip_word_prefix(cmd_clean, prefix) {
             let rewritten = if rest.is_empty() {
                 format!("{}{}", rule.rtk_cmd, redirect_suffix)
             } else {
@@ -3451,7 +3441,7 @@ mod tests {
     #[test]
     fn test_rewrite_absolute_path_grep() {
         assert_eq!(
-            rewrite_command("/usr/bin/grep -n foo /etc/hostname", &[]),
+            rewrite_command("/usr/bin/grep -n foo /etc/hostname", &[], &[]),
             Some("rtk grep -n foo /etc/hostname".into())
         );
     }
@@ -3459,7 +3449,7 @@ mod tests {
     #[test]
     fn test_rewrite_absolute_path_git() {
         assert_eq!(
-            rewrite_command("/usr/bin/git status", &[]),
+            rewrite_command("/usr/bin/git status", &[], &[]),
             Some("rtk git status".into())
         );
     }
@@ -3467,7 +3457,7 @@ mod tests {
     #[test]
     fn test_rewrite_absolute_path_find() {
         assert_eq!(
-            rewrite_command("/usr/bin/find . -name foo", &[]),
+            rewrite_command("/usr/bin/find . -name foo", &[], &[]),
             Some("rtk find . -name foo".into())
         );
     }
@@ -3475,14 +3465,14 @@ mod tests {
     #[test]
     fn test_rewrite_absolute_path_ls() {
         assert_eq!(
-            rewrite_command("/bin/ls -la", &[]),
+            rewrite_command("/bin/ls -la", &[], &[]),
             Some("rtk ls -la".into())
         );
     }
 
     #[test]
     fn test_rewrite_absolute_path_in_pipe_lhs() {
-        let result = rewrite_command("/usr/bin/git log --oneline | grep foo", &[]).unwrap();
+        let result = rewrite_command("/usr/bin/git log --oneline | grep foo", &[], &[]).unwrap();
         assert!(result.starts_with("rtk git log"), "got: {result}");
         // Pipe RHS intentionally not rewritten today
         assert!(result.ends_with("| grep foo"), "got: {result}");
@@ -3490,7 +3480,7 @@ mod tests {
 
     #[test]
     fn test_rewrite_absolute_path_in_compound() {
-        let result = rewrite_command("/usr/bin/git status && cargo test", &[]).unwrap();
+        let result = rewrite_command("/usr/bin/git status && cargo test", &[], &[]).unwrap();
         assert!(result.contains("rtk git status"), "got: {result}");
         assert!(result.contains("rtk cargo test"), "got: {result}");
     }
@@ -3498,7 +3488,7 @@ mod tests {
     #[test]
     fn test_rewrite_env_prefix_with_absolute_path() {
         assert_eq!(
-            rewrite_command("sudo /usr/bin/git status", &[]),
+            rewrite_command("sudo /usr/bin/git status", &[], &[]),
             Some("sudo rtk git status".into())
         );
     }
