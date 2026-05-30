@@ -39,6 +39,10 @@ When a hook sends `cargo fmt --all && cargo test 2>&1 | tail -20`:
 
 **Result**: `rtk cargo fmt --all && rtk cargo test 2>&1 | tail -20`. Bash handles the `&&` and `|` at execution time — each `rtk` invocation is a separate process.
 
+### Invariant: classify and rewrite must normalize identically
+
+`classify_command()` (step 3) and the rewrite step (step 4, `rewrite_segment_inner`) must apply the **same** normalizations before matching: env-prefix strip, absolute-path strip (`/usr/bin/grep` → `grep`, #485), git global-opt strip (`git -C /tmp` → `git`), golangci global-opt strip. `classify_command` decides *whether* a command is supported; the rewrite loop decides *what* it becomes. If one path normalizes and the other doesn't, classify says "supported" but the rewrite loop fails to match and produces nothing — a silent no-op. When you add a normalization to one path, add it (and a test) to the other.
+
 ## How History Analysis Works
 
 `rtk discover` reads Claude Code JSONL session files. Each file contains `tool_use`/`tool_result` pairs for every command the LLM ran. The module:

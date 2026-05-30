@@ -251,3 +251,39 @@ mod tests {
 | `println!` in filter path | Debug artifact in output | Remove or `eprintln!` |
 | Returning early without exit code | CI/CD thinks command succeeded | `std::process::exit(code)` |
 | `clone()` of large strings | Extra allocation in hot path | Borrow with `&str` |
+
+## Merge & Refactor Safety
+
+A conflict-free `git merge` is **not** a verified merge. When two branches edit
+the same function on non-conflicting lines, git stitches them textually — the
+result can fail to compile, resurrect dead code, or **silently revert a feature**.
+
+**After merging branches that touched the same files, always run the full gate:**
+
+```bash
+cargo build && cargo clippy --all-targets && cargo test --bin rtk
+```
+
+> RTK is a **binary-only** crate. `cargo test --lib` fails with "no library
+> targets found" — use `cargo test --bin rtk`.
+
+### Three semantic-conflict classes to scan for
+
+| Class | Symptom | Caught by |
+|-------|---------|-----------|
+| Function rename | other branch's call site uses the old name | `cargo build` (loud) |
+| Added parameter | other branch's call sites / tests use the old arity | `cargo build` (loud) |
+| **Silent revert** | a sibling edit uses a now-stale variable — compiles, lint-clean, classify still "passes" | **only behavioral tests** |
+
+The silent class is the dangerous one: it ships unless the feature has end-to-end
+tests *and* you run them. This is the real reason to write a test *with* every
+feature — the payoff lands at merge time, not write time.
+
+### RTK invariant: classify ↔ rewrite symmetry
+
+`classify_command` and `rewrite_segment_inner` (`src/discover/registry.rs`) MUST
+apply **identical** normalizations before matching: env-prefix strip, absolute
+binary-path strip (`/usr/bin/grep` → `grep`, #485), git global-opt strip
+(`git -C /tmp` → `git`), golangci global-opt strip. Add a normalization to one
+path without the other and rewriting breaks silently — classify says "supported,"
+then the rewrite loop fails to match. When you touch one, touch the other (with a test).
