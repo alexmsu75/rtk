@@ -360,14 +360,16 @@ fn split_token_spans(cmd: &str) -> Vec<(&str, usize, usize)> {
 }
 
 /// Normalize absolute binary paths: `/usr/bin/grep -rn foo` → `grep -rn foo` (#485)
-/// Only strips if the first word contains a `/` (Unix path).
+/// Only strips if the first word is an absolute path (starts with `/`). Relative
+/// paths like `./grep` or `vendor/bin/git` name local executables — stripping
+/// them would rewrite to a different (PATH-resolved) binary.
 fn strip_absolute_path(cmd: &str) -> String {
     let first_space = cmd.find(' ');
     let first_word = match first_space {
         Some(pos) => &cmd[..pos],
         None => cmd,
     };
-    if first_word.contains('/') {
+    if first_word.starts_with('/') {
         // Extract basename
         let basename = first_word.rsplit('/').next().unwrap_or(first_word);
         if basename.is_empty() {
@@ -3514,6 +3516,24 @@ mod tests {
         assert_eq!(
             rewrite_command("sudo /usr/bin/git status", &[], &[]),
             Some("sudo rtk git status".into())
+        );
+    }
+
+    #[test]
+    fn test_no_rewrite_relative_path() {
+        // A relative path names a local executable, not the PATH-resolved
+        // tool — rewriting `./grep` to `rtk grep` would run a different binary.
+        assert_eq!(rewrite_command("./grep -n foo src/", &[], &[]), None);
+        assert_eq!(rewrite_command("vendor/bin/git status", &[], &[]), None);
+        assert_eq!(rewrite_command("node_modules/.bin/ls -la", &[], &[]), None);
+    }
+
+    #[test]
+    fn test_strip_absolute_path_keeps_relative() {
+        assert_eq!(strip_absolute_path("./grep -n foo"), "./grep -n foo");
+        assert_eq!(
+            strip_absolute_path("vendor/bin/phpunit"),
+            "vendor/bin/phpunit"
         );
     }
 
